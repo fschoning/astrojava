@@ -1,11 +1,11 @@
 apply plugin: 'java'
 apply plugin: 'maven-publish'
 
-version = '2.0'
+version = '3.3.1'
 
-group = 'com.obliquity.astronomy'
+group = 'com.schoning'
 
-sourceCompatibility = '16'
+sourceCompatibility = '21'
 
 jar {
     manifest {
