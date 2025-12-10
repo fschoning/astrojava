@@ -17,6 +17,11 @@ publishing {
     publications {
         myLibrary(MavenPublication) {
             from components.java
+            
+            // Explicitly set the Maven coordinates
+            groupId = project.group
+            artifactId = 'astrojava'
+            version = project.version
         }
     }
 
