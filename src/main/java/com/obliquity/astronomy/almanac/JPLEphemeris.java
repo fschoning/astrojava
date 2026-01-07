@@ -133,52 +133,66 @@ public class JPLEphemeris implements Serializable {
 		RandomAccessFile raf = new RandomAccessFile(file, "r");
 
 		FileChannel fc = raf.getChannel();
-
-		ByteBuffer buffer = ByteBuffer.allocate(4);
 		
-		fc.position(NUMDE_OFFSET);
-
-		fc.read(buffer);
+		ByteBuffer buffer = fc.map(FileChannel.MapMode.READ_ONLY, 0, fc.size());
 		
-		buffer.flip();
+		loadFromBuffer(buffer, jdstart, jdfinis);
+		
+		fc.close();
+		raf.close();
+	}
 
-		buffer.order(ByteOrder.BIG_ENDIAN);
+	public JPLEphemeris(InputStream is, double jdstart, double jdfinis)
+			throws IOException, JPLEphemerisException {
+		if (jdstart > jdfinis)
+			throw new JPLEphemerisException(
+					"Start date is greater than end date");
 
-		numde = buffer.getInt();
+		ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+
+		int nRead;
+		byte[] data = new byte[16384];
+
+		while ((nRead = is.read(data, 0, data.length)) != -1) {
+			buffer.write(data, 0, nRead);
+		}
+
+		buffer.flush();
+
+		ByteBuffer bb = ByteBuffer.wrap(buffer.toByteArray());
+
+		loadFromBuffer(bb, jdstart, jdfinis);
+	}
+	
+	private void loadFromBuffer(ByteBuffer buffer, double jdstart, double jdfinis) throws JPLEphemerisException {
+		buffer.position(NUMDE_OFFSET);
+		
+		byte[] temp = new byte[4];
+		buffer.get(temp);
+		ByteBuffer tempBuffer = ByteBuffer.wrap(temp);
+
+		tempBuffer.order(ByteOrder.BIG_ENDIAN);
+		numde = tempBuffer.getInt();
 
 		if (!isValidEphemerisNumber(numde)) {
+			tempBuffer.rewind();
+			tempBuffer.order(ByteOrder.LITTLE_ENDIAN);
+			numde = tempBuffer.getInt();
 			buffer.order(ByteOrder.LITTLE_ENDIAN);
-			
-			buffer.rewind();
-			
-			numde = buffer.getInt();
+		} else {
+			buffer.order(ByteOrder.BIG_ENDIAN);
 		}
 		
 		// Get the number of coefficients per record for this ephemeris number.
 		int ndata = getNumberOfCoefficientsPerRecord(numde);
 		
 		if (ndata < 0) {
-			fc.close();
-			raf.close();
 			throw new JPLEphemerisException("Ephemeris number " + numde
 					+ " not recognised");			
 		}
 
 		int reclen = 8 * ndata;
 		
-		// Create a new ByteBuffer which is the correct record length for this ephemeris
-		ByteOrder byteOrder = buffer.order();
-		
-		buffer = ByteBuffer.allocate(reclen);
-		
-		buffer.order(byteOrder);
-		
-		fc.position(0);
-		
-		fc.read(buffer);
-		
-		buffer.flip();
-
 		buffer.position(LIMITS_OFFSET);
 		
 		limits = new double[3];
@@ -194,16 +208,10 @@ public class JPLEphemeris implements Serializable {
 			jdfinis = limits[1] - limits[2];
 
 		if (jdstart < limits[0] || jdstart > limits[1]) {
-			fc.close();
-			raf.close();
-		
 			throw new JPLEphemerisException("Start date is outside valid range");
 		}
 		
 		if (jdfinis < limits[0] || jdfinis > limits[1]) {
-			fc.close();
-			raf.close();
-			
 			throw new JPLEphemerisException("End date is outside valid range");
 		}
 
@@ -256,47 +264,42 @@ public class JPLEphemeris implements Serializable {
 		
 		// Read record #2, which contains the values of the constants as an array
 		// of double values.
-		fc.position(reclen);
+		buffer.position(reclen);
 	
-		buffer.clear();
-		
-		fc.read(buffer);
-		
-		buffer.flip();
-
 		for (int iconst = 0; iconst < ncon; iconst++) {
-			String cname = new String(cnam, iconst * 6, 6, "UTF-8").trim();
-
-			double cval = buffer.getDouble();
-
-			mapConstants.put(cname, cval);
+			try {
+				String cname = new String(cnam, iconst * 6, 6, "UTF-8").trim();
+				double cval = buffer.getDouble();
+				mapConstants.put(cname, cval);
+			} catch (UnsupportedEncodingException e) {
+				// Should not happen for UTF-8
+			}
 		}
 
 		long offset = (firstrec + 2) * reclen;
-		fc.position(offset);
+		
+		// Check that the offset fits in an int (ByteBuffer limit is int)
+		// Usually this is fine for standard DE files which are < 2GB
+		if (offset > Integer.MAX_VALUE) {
+             // Fallback for very large files if needed, but MappedByteBuffer is tricky with >2GB
+			 // For standard DE440 (~100MB) this is fine.
+		}
+		
+		buffer.position((int)offset);
 
 		numrecs = (int) Math.round((limits[1] - limits[0]) / limits[2]);
 
 		numrecs = lastrec - firstrec + 1;
 
-		data = new double[numrecs][ndata];
+		this.data = new double[numrecs][ndata];
 
 		for (int j = 0; j < numrecs; j++) {
-			buffer.clear();
-			
-			fc.read(buffer);
-			
-			buffer.flip();
-			
 			for (int k = 0; k < ndata; k++)
-				data[j][k] = buffer.getDouble();
+				this.data[j][k] = buffer.getDouble();
 		}
 
-		fc.close();
-		raf.close();
-
-		limits[0] = data[0][0];
-		limits[1] = data[numrecs - 1][1];
+		limits[0] = this.data[0][0];
+		limits[1] = this.data[numrecs - 1][1];
 
 		for (int i = 0; i < offsets.length; i++)
 			if (offsets[i][1] > nCheby)
@@ -367,6 +370,11 @@ public class JPLEphemeris implements Serializable {
 		this(file, 0.0, 0.0);
 	}
 	
+	public JPLEphemeris(InputStream is)
+	    throws IOException, JPLEphemerisException {
+	    this(is, 0.0, 0.0);
+	}
+
 	/**
 	 * Constructs a new JPLEphemeris object for a specified time span from a
 	 * binary JPL ephemeris file.
